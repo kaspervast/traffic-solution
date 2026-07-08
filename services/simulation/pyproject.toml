@@ -1,0 +1,33 @@
+[project]
+name = "rajkot-sumo-simulation"
+version = "0.1.0"
+description = "Rajkot AI Traffic Command Center - SUMO simulation service"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.3",
+    "redis>=5.0",
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
+    "pyproj>=3.6",
+]
+# Note: sumolib/traci are NOT pip packages here. They ship inside the SUMO
+# distribution (SUMO_HOME/tools) and are imported after
+# app.config.ensure_sumo_tools_on_path() appends that directory to
+# sys.path. Set SUMO_HOME (see .env / README) to a real SUMO install:
+#   Windows native: C:\Program Files (x86)\Eclipse\Sumo
+#   Docker image (spec section M): /usr/share/sumo
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["app*"]

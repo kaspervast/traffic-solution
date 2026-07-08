@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from geoalchemy2.shape import to_shape
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,22 +19,33 @@ def incidents_live(db: Session = Depends(get_db)) -> list[IncidentOut]:
         .where(TrafficIncident.is_active.is_(True))
         .order_by(TrafficIncident.last_seen_at.desc())
     )
-    return [
-        IncidentOut(
-            id=i.id,
-            provider_incident_id=i.provider_incident_id,
-            category=i.category,
-            icon_category=i.icon_category,
-            magnitude_of_delay=i.magnitude_of_delay,
-            from_text=i.from_text,
-            to_text=i.to_text,
-            description=i.description,
-            delay_sec=i.delay_sec,
-            length_m=i.length_m,
-            start_time=i.start_time,
-            end_time=i.end_time,
-            is_active=i.is_active,
-            last_seen_at=i.last_seen_at,
+    out = []
+    for i in db.scalars(stmt):
+        lat = lon = None
+        if i.geom is not None:
+            shape = to_shape(i.geom)
+            # Point -> (x, y); LineString/other -> use centroid as a
+            # reasonable single-marker placement.
+            centroid = shape if shape.geom_type == "Point" else shape.centroid
+            lon, lat = centroid.x, centroid.y
+        out.append(
+            IncidentOut(
+                id=i.id,
+                provider_incident_id=i.provider_incident_id,
+                category=i.category,
+                icon_category=i.icon_category,
+                magnitude_of_delay=i.magnitude_of_delay,
+                from_text=i.from_text,
+                to_text=i.to_text,
+                description=i.description,
+                delay_sec=i.delay_sec,
+                length_m=i.length_m,
+                start_time=i.start_time,
+                end_time=i.end_time,
+                is_active=i.is_active,
+                last_seen_at=i.last_seen_at,
+                lat=lat,
+                lon=lon,
+            )
         )
-        for i in db.scalars(stmt)
-    ]
+    return out

@@ -91,6 +91,8 @@ class IncidentOut(BaseModel):
     end_time: dt.datetime | None
     is_active: bool
     last_seen_at: dt.datetime
+    lat: float | None = None
+    lon: float | None = None
 
 
 class AnomalyOut(BaseModel):

@@ -1,0 +1,89 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: trafficdb
+      POSTGRES_USER: traffic
+      POSTGRES_PASSWORD: trafficpass
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traffic -d trafficdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./services/api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://traffic:trafficpass@postgres:5432/trafficdb
+      REDIS_URL: redis://redis:6379/0
+      SUMO_SERVICE_URL: http://simulation:8100
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./services/simulation/scenarios:/app/scenarios
+      - ./services/simulation/runs:/app/runs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build: ./services/api
+    command: python -m app.jobs.poll_tomtom
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://traffic:trafficpass@postgres:5432/trafficdb
+      REDIS_URL: redis://redis:6379/0
+      SUMO_SERVICE_URL: http://simulation:8100
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  simulation:
+    build: ./services/simulation
+    env_file: .env
+    environment:
+      SUMO_HOME: /usr/share/sumo
+      DATABASE_URL: postgresql+psycopg://traffic:trafficpass@postgres:5432/trafficdb
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./services/simulation/scenarios:/app/scenarios
+      - ./services/simulation/runs:/app/runs
+    ports:
+      - "8100:8100"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  web:
+    build: ./apps/web
+    env_file: .env
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
+volumes:
+  pgdata:

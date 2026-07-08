@@ -8,7 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.logging import configure_logging
-from app.routers import ai, alerts, anomalies, aoi, health, incidents, probe_points, reports, sumo, traffic
+from app.routers import ai, alerts, anomalies, aoi, auth, health, incidents, probe_points, reports, sumo, traffic
 
 configure_logging(level=logging.INFO)
 
@@ -31,6 +31,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(auth.router)
 app.include_router(aoi.router)
 app.include_router(probe_points.router)
 app.include_router(traffic.router)

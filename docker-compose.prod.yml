@@ -1,0 +1,125 @@
+# Single-port deployment variant for shared/remote hosts.
+#
+# Differences from docker-compose.yml:
+#   - Only one host port is published: nginx on $DEPLOY_PORT (default 2134),
+#     which reverse-proxies "/api/*" to the api service and everything else
+#     to the web service. api/web/simulation/worker are not reachable from
+#     outside the docker network directly.
+#   - postgres/redis are published on 127.0.0.1 only (loopback), so
+#     one-off host-side scripts (alembic, seed scripts) can reach them
+#     without exposing the database to the internet.
+#   - web is built with NEXT_PUBLIC_API_BASE_URL="" so the browser calls
+#     same-origin relative "/api/..." paths, which nginx routes internally.
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d --build
+#
+# This file intentionally does NOT extend docker-compose.yml via multiple
+# -f merges, to avoid relying on list-merge semantics for `ports`. It is a
+# standalone full compose file for this deployment topology.
+
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: trafficdb
+      POSTGRES_USER: traffic
+      POSTGRES_PASSWORD: trafficpass
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U traffic -d trafficdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  redis:
+    image: redis:7
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  api:
+    build: ./services/api
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://traffic:trafficpass@postgres:5432/trafficdb
+      REDIS_URL: redis://redis:6379/0
+      SUMO_SERVICE_URL: http://simulation:8100
+      SUMO_SCENARIO_DIR: /app/scenarios/rajkot_pilot
+      SUMO_RUNS_DIR: /app/runs
+    volumes:
+      - ./services/simulation/scenarios:/app/scenarios
+      - ./services/simulation/runs:/app/runs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  worker:
+    build: ./services/api
+    command: python -m app.jobs.poll_tomtom
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://traffic:trafficpass@postgres:5432/trafficdb
+      REDIS_URL: redis://redis:6379/0
+      SUMO_SERVICE_URL: http://simulation:8100
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  simulation:
+    build: ./services/simulation
+    env_file: .env
+    environment:
+      SUMO_HOME: /usr/share/sumo
+      DATABASE_URL: postgresql+psycopg://traffic:trafficpass@postgres:5432/trafficdb
+      REDIS_URL: redis://redis:6379/0
+      SUMO_SCENARIO_DIR: /app/scenarios/rajkot_pilot
+      SUMO_RUNS_DIR: /app/runs
+    volumes:
+      - ./services/simulation/scenarios:/app/scenarios
+      - ./services/simulation/runs:/app/runs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        NEXT_PUBLIC_API_BASE_URL: ""
+    env_file: .env
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "${DEPLOY_PORT:-2134}:80"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - api
+      - web
+    restart: unless-stopped
+
+volumes:
+  pgdata:

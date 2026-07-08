@@ -374,6 +374,47 @@ using this for anything operational:
 
 ---
 
+## 11. Single-port deployment (`docker-compose.prod.yml`)
+
+For a shared host where only one port should be exposed publicly (e.g. a
+box that already runs other services on their own ports), use
+`docker-compose.prod.yml` instead of `docker-compose.yml`. It adds an
+`nginx` service as the only container publishing a host port, reverse-
+proxying `/api/*` to the `api` service and everything else to `web`. All
+other services (`postgres`, `redis`, `simulation`, `api`, `web`) are only
+reachable over the internal Docker network; `postgres`/`redis` are
+additionally published on `127.0.0.1` only, so host-side one-off scripts
+(migrations, seeds) can reach them without exposing the database publicly.
+
+```bash
+# .env must exist at repo root first (real TOMTOM_API_KEY/GEMINI_API_KEY,
+# a real JWT_SECRET_KEY -- do not use the insecure dev default here).
+DEPLOY_PORT=2134 docker compose -f docker-compose.prod.yml up -d --build
+
+# Migrations + seeds: run once from a host-side venv (see section 3's
+# "native, no Docker" path for the venv setup), pointed at the
+# loopback-published Postgres:
+#   DATABASE_URL=postgresql+psycopg://traffic:trafficpass@127.0.0.1:5432/trafficdb
+alembic upgrade head
+python ../../scripts/seed_aoi.py
+python ../../scripts/seed_probe_points.py
+SUMO_HOME=/usr/share/sumo python ../../scripts/import_sumo_edges.py
+```
+
+The dashboard is then reachable at `http://<host>:2134/` and the API at
+`http://<host>:2134/api/...`. `NEXT_PUBLIC_API_BASE_URL` is baked into the
+frontend build as `""` (empty) for this mode, so the browser calls
+same-origin relative `/api/...` paths that nginx routes internally --
+this only works behind the reverse proxy, not with `apps/web` run
+standalone.
+
+**No login route yet** (see section 10) means every `require_role`-gated
+write endpoint (probe point CRUD, alert approval, scenario run/approval)
+will 401 until `/api/auth/login` exists. Read-only views (live map,
+reports, command center Q&A) work without auth.
+
+---
+
 ## Repository layout
 
 ```
@@ -382,7 +423,8 @@ services/api/               FastAPI backend (routers, services, schemas, jobs, A
 services/simulation/        SUMO simulation microservice (network build, scenario runner, TraCI)
 services/simulation/scenarios/rajkot_pilot/   Real generated SUMO network + baseline demand
 scripts/                    seed_aoi.py, seed_probe_points.py, import_sumo_edges.py
-infra/                      nginx/, postgres/ (placeholders for future reverse proxy / init scripts)
+infra/nginx/                nginx.conf used by docker-compose.prod.yml's single-port reverse proxy
 docs/                       (see architecture notes inline in code + this README)
-docker-compose.yml           postgres(postgis) / redis / api / worker / simulation / web
+docker-compose.yml           postgres(postgis) / redis / api / worker / simulation / web (multi-port, local dev)
+docker-compose.prod.yml      single-port variant (nginx reverse proxy) for shared/remote hosts
 ```

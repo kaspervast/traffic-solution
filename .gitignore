@@ -29,6 +29,9 @@ services/simulation/runs/*
 pgdata/
 *.sqlite3
 
+# Claude Code session state
+.claude/
+
 # OS / editor
 .DS_Store
 Thumbs.db

@@ -14,6 +14,7 @@ from __future__ import annotations
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -191,29 +192,45 @@ def slugify(name: str) -> str:
     return slug
 
 
-def download_osm_extract(bbox: str, dest_path: str) -> None:
+def download_osm_extract(bbox: str, dest_path: str, attempts: int = 3) -> None:
     """Fetches an OSM extract for `bbox` ("minLon,minLat,maxLon,maxLat")
     from the Overpass API "map" export -- the same endpoint documented in
     scenarios/rajkot_pilot/README.md's manual `curl` command -- and writes
     the raw response body to `dest_path`. Overpass can be slow for larger
     (still pilot-scale) areas, so this uses a generous 120s timeout. Raises
     a RuntimeError with the response status/body on failure; never silently
-    swallows a failed download."""
+    swallows a failed download.
+
+    The public overpass-api.de instance is a shared, occasionally
+    overloaded community service and intermittently returns transient
+    errors (406/429/5xx) for a request that succeeds moments later with the
+    exact same headers -- confirmed live: an identical request failed with
+    406 then succeeded with 200 a few seconds after. Retries a couple of
+    times with a short backoff before giving up for real.
+    """
     url = f"https://overpass-api.de/api/map?bbox={bbox}"
-    try:
-        response = httpx.get(url, timeout=httpx.Timeout(120.0, connect=15.0))
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"Overpass API request failed for bbox={bbox}: {exc}") from exc
+    last_error: str | None = None
 
-    if response.status_code != 200:
-        raise RuntimeError(
-            f"Overpass API returned HTTP {response.status_code} for bbox={bbox}: "
-            f"{response.text[:500]}"
-        )
+    for attempt in range(1, attempts + 1):
+        try:
+            response = httpx.get(url, timeout=httpx.Timeout(120.0, connect=15.0))
+        except httpx.HTTPError as exc:
+            last_error = f"Overpass API request failed for bbox={bbox}: {exc}"
+        else:
+            if response.status_code == 200:
+                dest = Path(dest_path)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                dest.write_bytes(response.content)
+                return
+            last_error = (
+                f"Overpass API returned HTTP {response.status_code} for bbox={bbox}: "
+                f"{response.text[:500]}"
+            )
 
-    dest = Path(dest_path)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(response.content)
+        if attempt < attempts:
+            time.sleep(3 * attempt)  # 3s, 6s
+
+    raise RuntimeError(f"{last_error} (failed after {attempts} attempts)")
 
 
 def resolve_random_trips_script() -> tuple[str, str]:

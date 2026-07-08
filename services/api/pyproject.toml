@@ -22,6 +22,7 @@ dependencies = [
     "passlib[bcrypt]>=1.7",
     "python-multipart>=0.0.9",
     "shapely>=2.0",
+    "pyproj>=3.6",
 ]
 # Note: sumolib/traci are NOT installed via pip here. They ship inside the
 # SUMO distribution itself (SUMO_HOME/tools). app/core/config.py and the

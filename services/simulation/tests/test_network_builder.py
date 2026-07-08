@@ -8,9 +8,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 import pytest
 
-from app.network_builder import count_junctions, count_vehicles, slugify, validate_bbox_size
+from app import network_builder
+from app.network_builder import (
+    count_junctions,
+    count_vehicles,
+    download_osm_extract,
+    slugify,
+    validate_bbox_size,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -105,3 +113,106 @@ def test_count_vehicles_counts_vehicle_and_trip_elements(tmp_path: Path):
     route_file = tmp_path / "route.rou.xml"
     route_file.write_text(ROUTE_XML, encoding="utf-8")
     assert count_vehicles(str(route_file)) == 3
+
+
+# ---------------------------------------------------------------------------
+# download_osm_extract multi-source fetch
+# ---------------------------------------------------------------------------
+
+
+class _FakeResponse:
+    def __init__(self, status_code: int, content: bytes = b"", text: str = ""):
+        self.status_code = status_code
+        self.content = content
+        self.text = text or content.decode("utf-8", "replace")
+
+
+def _patch_httpx(monkeypatch, handler):
+    """Replace httpx.get with `handler(url) -> _FakeResponse` and neutralize
+    the inter-attempt sleep so retry paths don't slow the test down."""
+    calls: list[str] = []
+
+    def fake_get(url, *args, **kwargs):
+        calls.append(url)
+        return handler(url)
+
+    monkeypatch.setattr(network_builder.httpx, "get", fake_get)
+    monkeypatch.setattr(network_builder.time, "sleep", lambda *_: None)
+    return calls
+
+
+def test_download_uses_primary_when_it_succeeds(tmp_path: Path, monkeypatch):
+    calls = _patch_httpx(monkeypatch, lambda url: _FakeResponse(200, b"<osm/>"))
+    dest = tmp_path / "net.osm.xml"
+
+    download_osm_extract("70.0,22.0,70.01,22.01", str(dest))
+
+    assert dest.read_bytes() == b"<osm/>"
+    # Only the primary (OSM API) should have been hit; fallback skipped.
+    assert len(calls) == 1
+    assert "openstreetmap.org" in calls[0]
+
+
+def test_download_falls_back_to_overpass_on_primary_client_error(tmp_path: Path, monkeypatch):
+    # OSM API rejects (e.g. bbox too large / too many nodes -> 400); the
+    # Overpass fallback then succeeds. The 400 must be non-retryable so we
+    # move to the fallback immediately rather than looping on the primary.
+    def handler(url: str) -> _FakeResponse:
+        if "openstreetmap.org" in url:
+            return _FakeResponse(400, text="You requested too many nodes")
+        return _FakeResponse(200, b"<osm-from-overpass/>")
+
+    calls = _patch_httpx(monkeypatch, handler)
+    dest = tmp_path / "net.osm.xml"
+
+    download_osm_extract("70.0,22.0,70.09,22.09", str(dest))
+
+    assert dest.read_bytes() == b"<osm-from-overpass/>"
+    # Primary hit once (no retry on 400), then the Overpass fallback.
+    assert sum("openstreetmap.org" in u for u in calls) == 1
+    assert any("overpass-api.de" in u for u in calls)
+
+
+def test_download_retries_primary_on_transient_then_succeeds(tmp_path: Path, monkeypatch):
+    # A transient 429 on the primary should be retried (not treated as a
+    # hard client error), and a subsequent 200 should win without ever
+    # touching the fallback.
+    seq = iter([_FakeResponse(429, text="slow down"), _FakeResponse(200, b"<osm/>")])
+
+    calls = _patch_httpx(monkeypatch, lambda url: next(seq))
+    dest = tmp_path / "net.osm.xml"
+
+    download_osm_extract("70.0,22.0,70.01,22.01", str(dest), attempts=2)
+
+    assert dest.read_bytes() == b"<osm/>"
+    assert all("openstreetmap.org" in u for u in calls)
+    assert len(calls) == 2
+
+
+def test_download_raises_naming_all_sources_when_all_fail(tmp_path: Path, monkeypatch):
+    _patch_httpx(monkeypatch, lambda url: _FakeResponse(406, text="Not Acceptable"))
+    dest = tmp_path / "net.osm.xml"
+
+    with pytest.raises(RuntimeError) as exc:
+        download_osm_extract("70.0,22.0,70.01,22.01", str(dest), attempts=1)
+
+    msg = str(exc.value)
+    assert "OpenStreetMap API" in msg
+    assert "Overpass API" in msg
+    assert not dest.exists()
+
+
+def test_download_falls_back_when_primary_connection_errors(tmp_path: Path, monkeypatch):
+    # A network-level httpx error on the primary must not abort the whole
+    # download -- it should still try the fallback.
+    def handler(url: str) -> _FakeResponse:
+        if "openstreetmap.org" in url:
+            raise httpx.ConnectError("boom")
+        return _FakeResponse(200, b"<osm/>")
+
+    _patch_httpx(monkeypatch, handler)
+    dest = tmp_path / "net.osm.xml"
+
+    download_osm_extract("70.0,22.0,70.01,22.01", str(dest), attempts=1)
+
+    assert dest.read_bytes() == b"<osm/>"

@@ -28,6 +28,28 @@ from app.config import ensure_sumo_tools_on_path, get_simulation_settings
 # city-wide extracts. ~0.1 degree is roughly 10km at Rajkot's latitude.
 MAX_BBOX_DEGREES = 0.1
 
+# Both the OSM main API and Overpass usage policies expect a descriptive
+# User-Agent identifying the application; a generic/default UA can get
+# rejected. Sent on every OSM-data request below.
+_OSM_USER_AGENT = "Rajkot-AI-Traffic-Platform/0.1 (+SUMO network builder)"
+
+# OSM extract sources, tried in order (spec section E download step). Each
+# entry is (label, url_template) where the template takes {bbox} as
+# "minLon,minLat,maxLon,maxLat" -- both sources use that exact ordering, so
+# no coordinate conversion is needed.
+#
+# Primary is the OpenStreetMap main API: a completely separate service from
+# Overpass, fast, and returns the same OSM XML format netconvert consumes.
+# It caps at 0.25 sq degrees / 50000 nodes -- our MAX_BBOX_DEGREES guardrail
+# keeps area <= 0.01 sq degrees, and the node cap is only a risk for a very
+# large/dense box, which is exactly what the Overpass fallback covers (no
+# node limit). Keeping Overpass second also means that if the OSM API is
+# ever the one having a bad day, network builds still work.
+_OSM_SOURCES = [
+    ("OpenStreetMap API", "https://api.openstreetmap.org/api/0.6/map?bbox={bbox}"),
+    ("Overpass API", "https://overpass-api.de/api/map?bbox={bbox}"),
+]
+
 # Recommended netconvert flags for the Rajkot pilot area (spec section E):
 # left-hand traffic (India), guess/join traffic signals from OSM data.
 NETCONVERT_ARGS = [
@@ -192,56 +214,71 @@ def slugify(name: str) -> str:
     return slug
 
 
-def download_osm_extract(bbox: str, dest_path: str, attempts: int = 3) -> None:
-    """Fetches an OSM extract for `bbox` ("minLon,minLat,maxLon,maxLat")
-    from the Overpass API "map" export -- the same endpoint documented in
-    scenarios/rajkot_pilot/README.md's manual `curl` command -- and writes
-    the raw response body to `dest_path`. Overpass can be slow for larger
-    (still pilot-scale) areas, so this uses a generous 120s timeout. Raises
-    a RuntimeError with the response status/body on failure; never silently
-    swallows a failed download.
-
-    The public overpass-api.de instance is a shared community service with
-    its own abuse-mitigation: a burst of requests in a short window (e.g.
-    repeated manual testing, or several operators generating networks close
-    together) gets soft-blocked with 406 for a while even though the
-    request itself is well-formed -- confirmed live by reproducing it
-    directly: one request succeeded, then every subsequent request (same
-    client, same headers, host and container alike) got 406 for several
-    minutes after. This is a rate limit, not a per-request fluke, so the
-    backoff here is deliberately in the 10s-40s range rather than a quick
-    couple of seconds -- a fast retry would just re-trigger the same block.
-    If every attempt still fails, the caller needs to wait longer than this
-    function is willing to block a single HTTP request for and try again
-    later; this is an external dependency limitation, not a bug to route
-    around with cleverer request headers (verified: varying Accept-Encoding
-    and User-Agent made no difference).
-    """
-    url = f"https://overpass-api.de/api/map?bbox={bbox}"
-    last_error: str | None = None
-
+def _fetch_osm_source(label: str, url: str, bbox: str, attempts: int) -> tuple[bytes | None, str]:
+    """Tries one OSM source up to `attempts` times with a short backoff for
+    transient blips. Returns (content, "") on success, or (None, last_error)
+    if this source is exhausted. A definitive 4xx (other than 429 rate
+    limit) is treated as non-retryable for this source -- e.g. the OSM API
+    returns 400 when a bbox exceeds its node/area limit, in which case
+    retrying the same source is pointless and the caller should move on to
+    the next source immediately rather than burn the backoff budget."""
+    last_error = ""
     for attempt in range(1, attempts + 1):
         try:
-            response = httpx.get(url, timeout=httpx.Timeout(120.0, connect=15.0))
+            response = httpx.get(
+                url,
+                timeout=httpx.Timeout(120.0, connect=15.0),
+                headers={"User-Agent": _OSM_USER_AGENT},
+                follow_redirects=True,
+            )
         except httpx.HTTPError as exc:
-            last_error = f"Overpass API request failed for bbox={bbox}: {exc}"
+            last_error = f"{label} request failed for bbox={bbox}: {exc}"
         else:
             if response.status_code == 200:
-                dest = Path(dest_path)
-                dest.parent.mkdir(parents=True, exist_ok=True)
-                dest.write_bytes(response.content)
-                return
+                return response.content, ""
             last_error = (
-                f"Overpass API returned HTTP {response.status_code} for bbox={bbox}: "
-                f"{response.text[:500]}"
+                f"{label} returned HTTP {response.status_code} for bbox={bbox}: "
+                f"{response.text[:300]}"
             )
+            # Non-retryable client errors (bad/too-large bbox etc.), except
+            # 429 which is a genuine "try again later" -- give up on THIS
+            # source right away so we fall through to the next one.
+            if 400 <= response.status_code < 500 and response.status_code != 429:
+                return None, last_error
 
         if attempt < attempts:
-            time.sleep(10 * attempt)  # 10s, 20s
+            time.sleep(3 * attempt)  # 3s, 6s
+    return None, last_error
+
+
+def download_osm_extract(bbox: str, dest_path: str, attempts: int = 2) -> None:
+    """Downloads an OSM extract for `bbox` ("minLon,minLat,maxLon,maxLat")
+    and writes the raw OSM XML to `dest_path`, trying each source in
+    `_OSM_SOURCES` in order until one succeeds. Raises a RuntimeError naming
+    every source and its last status only when all sources are exhausted; it
+    never silently swallows a failed download.
+
+    Background: the original single-source Overpass fetch broke in
+    production when overpass-api.de IP-rate-limited this server (sustained
+    HTTP 406 for minutes, reproduced from host and container, curl and
+    httpx alike, unaffected by request headers or a full VM reboot). The
+    OpenStreetMap main API is a separate service unaffected by that block,
+    returns the identical OSM XML format, and uses the same bbox ordering,
+    so it is the primary source now with Overpass kept as a fallback for the
+    large/dense-bbox case the OSM API rejects (see _OSM_SOURCES)."""
+    errors: list[str] = []
+    for label, template in _OSM_SOURCES:
+        content, err = _fetch_osm_source(label, template.format(bbox=bbox), bbox, attempts)
+        if content is not None:
+            dest = Path(dest_path)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(content)
+            return
+        errors.append(err)
 
     raise RuntimeError(
-        f"{last_error} (failed after {attempts} attempts). This looks like Overpass API's "
-        "shared-instance rate limiting rather than a bug -- wait a few minutes and retry."
+        "Could not download an OSM extract from any source for bbox="
+        f"{bbox}. Tried: " + " | ".join(errors)
     )
 
 

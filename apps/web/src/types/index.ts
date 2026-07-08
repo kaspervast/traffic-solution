@@ -127,6 +127,22 @@ export interface ScenarioComparison {
   recommendation: "approve_for_field_review" | "reject" | "needs_more_data";
 }
 
+export interface BboxSummary {
+  bbox: [number, number, number, number];
+  incident_count: number;
+  by_magnitude_of_delay: Record<string, number>;
+}
+
+export interface ImportOsmResult {
+  network_id: string;
+  network_name: string;
+  edges_created: number;
+  edges_skipped_no_shape: number;
+  vehicle_count: number | null;
+  junction_count: number | null;
+  validated: boolean | null;
+}
+
 export const SEVERITY_COLORS: Record<Severity, string> = {
   critical: "#dc2626",
   high: "#ea580c",

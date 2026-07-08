@@ -7,6 +7,7 @@ import clsx from "clsx";
 const LINKS = [
   { href: "/command-center", label: "Live Map + Command Center" },
   { href: "/sumo-lab", label: "SUMO What-If Lab" },
+  { href: "/network-builder", label: "Network Builder" },
   { href: "/anomalies", label: "Anomaly Monitor" },
   { href: "/reports", label: "Reports" },
   { href: "/admin", label: "Admin" },

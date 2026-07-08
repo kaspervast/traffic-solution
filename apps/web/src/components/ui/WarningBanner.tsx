@@ -23,3 +23,15 @@ export function PilotScopeWarning() {
     </WarningBanner>
   );
 }
+
+export function NetworkBuilderWarning() {
+  return (
+    <WarningBanner>
+      Only the seeded Rajkot pilot network has TomTom-edge grounding out of the box. Networks
+      built here need their own TomTom-edge mapping run (match-tomtom-segments) before AI
+      scenario drafts for them will have live TomTom grounding -- until then, drafts will note
+      grounding is unavailable rather than invent numbers. Keep new areas small (pilot-scale, not
+      city-wide) -- this tool is not meant for large extracts.
+    </WarningBanner>
+  );
+}

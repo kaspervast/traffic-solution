@@ -1,7 +1,8 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState } from "react";
+import { useSearchParams } from "next/navigation";
+import { Suspense, useEffect, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { api, ApiError } from "@/lib/api";
 import { useAOI } from "@/lib/hooks";
@@ -11,6 +12,7 @@ import { ScenarioBuilder } from "@/components/sumo/ScenarioBuilder";
 import { ScenarioRunStatus } from "@/components/sumo/ScenarioRunStatus";
 import { ScenarioComparison } from "@/components/sumo/ScenarioComparison";
 import { EdgeImpactTable } from "@/components/sumo/EdgeImpactTable";
+import { AiScenarioChat } from "@/components/sumo/AiScenarioChat";
 import type { RunResult } from "@/components/sumo/types";
 import type { ScenarioComparison as ScenarioComparisonType, SumoEdgeOut } from "@/types";
 
@@ -26,8 +28,24 @@ interface SumoNetworkSummary {
 }
 
 export default function SumoLabPage() {
+  // useSearchParams() opts the tree into client-side rendering up to the
+  // nearest Suspense boundary (Next.js app router requirement) -- wrap the
+  // real page body so the route can still be statically prerendered.
+  return (
+    <Suspense fallback={<div className="flex h-[calc(100vh-49px)] items-center justify-center text-slate-500">Loading…</div>}>
+      <SumoLabInner />
+    </Suspense>
+  );
+}
+
+function SumoLabInner() {
   const aoiQuery = useAOI();
+  const searchParams = useSearchParams();
+  const networkParam = searchParams.get("network");
+
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const [selectedNetworkId, setSelectedNetworkId] = useState<string | undefined>(undefined);
+  const [builderMode, setBuilderMode] = useState<"manual" | "ai">("manual");
   const [baselineRun, setBaselineRun] = useState<RunResult | null>(null);
   const [scenarioRun, setScenarioRun] = useState<RunResult | null>(null);
   const [comparison, setComparison] = useState<ScenarioComparisonType | null>(null);
@@ -39,7 +57,19 @@ export default function SumoLabPage() {
     queryFn: () => api.get<SumoNetworkSummary[]>("/api/sumo/networks"),
     retry: false,
   });
-  const networkId = networksQuery.data?.[0]?.id;
+
+  // Default selection: the ?network= URL param if it refers to a real
+  // network, else the first network in the list. Only runs once the list
+  // has loaded and no valid selection exists yet -- doesn't fight the user
+  // once they've picked something from the dropdown.
+  useEffect(() => {
+    if (selectedNetworkId && networksQuery.data?.some((n) => n.id === selectedNetworkId)) return;
+    if (!networksQuery.data || networksQuery.data.length === 0) return;
+    const fromUrl = networkParam && networksQuery.data.some((n) => n.id === networkParam) ? networkParam : null;
+    setSelectedNetworkId(fromUrl ?? networksQuery.data[0].id);
+  }, [networksQuery.data, networkParam, selectedNetworkId]);
+
+  const networkId = selectedNetworkId;
 
   const edgesQuery = useQuery({
     queryKey: ["sumo-edges", networkId],
@@ -113,7 +143,7 @@ export default function SumoLabPage() {
         <div className="relative h-[45vh] lg:h-auto">
           {networksQuery.isError || !networkId ? (
             <div className="flex h-full items-center justify-center p-4">
-              <ErrorNotice message="No SUMO network registered in the database yet. Run scripts/import_sumo_edges.py once the migration has been applied (a real rajkot_pilot.net.xml with 1667 routable edges already exists on disk -- see services/simulation/scenarios/rajkot_pilot/network/)." />
+              <ErrorNotice message="No SUMO network registered in the database yet. Run scripts/import_sumo_edges.py once the migration has been applied (a real rajkot_pilot.net.xml with 1667 routable edges already exists on disk -- see services/simulation/scenarios/rajkot_pilot/network/), or generate a new one from the Network Builder tab." />
             </div>
           ) : aoiQuery.data ? (
             <SumoMapLayer
@@ -128,13 +158,56 @@ export default function SumoLabPage() {
         </div>
 
         <div className="flex flex-col gap-3 overflow-y-auto border-l border-slate-800 p-4">
-          <ScenarioBuilder
-            selectedEdgeId={selectedEdgeId}
-            onRunBaseline={() => baselineMutation.mutate()}
-            onRunScenario={(config) => scenarioMutation.mutate(config)}
-            isRunningBaseline={baselineMutation.isPending}
-            isRunningScenario={scenarioMutation.isPending}
-          />
+          {networksQuery.data && networksQuery.data.length > 0 && (
+            <label className="text-xs text-slate-300">
+              Network
+              <select
+                value={networkId ?? ""}
+                onChange={(e) => {
+                  setSelectedNetworkId(e.target.value);
+                  setSelectedEdgeId(null);
+                }}
+                className="mt-0.5 w-full rounded border border-slate-700 bg-slate-950 px-2 py-1"
+              >
+                {networksQuery.data.map((n) => (
+                  <option key={n.id} value={n.id}>
+                    {n.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          <div className="flex gap-1 border-b border-slate-800 pb-2">
+            <button
+              onClick={() => setBuilderMode("manual")}
+              className={`rounded px-3 py-1 text-xs ${
+                builderMode === "manual" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              Manual
+            </button>
+            <button
+              onClick={() => setBuilderMode("ai")}
+              className={`rounded px-3 py-1 text-xs ${
+                builderMode === "ai" ? "bg-slate-700 text-white" : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              Ask AI
+            </button>
+          </div>
+
+          {builderMode === "manual" ? (
+            <ScenarioBuilder
+              selectedEdgeId={selectedEdgeId}
+              onRunBaseline={() => baselineMutation.mutate()}
+              onRunScenario={(config) => scenarioMutation.mutate(config)}
+              isRunningBaseline={baselineMutation.isPending}
+              isRunningScenario={scenarioMutation.isPending}
+            />
+          ) : (
+            <AiScenarioChat selectedEdgeId={selectedEdgeId} networkId={networkId} aoiId={aoiQuery.data?.id} />
+          )}
 
           {runError && <ErrorNotice message={runError} />}
 

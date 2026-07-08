@@ -20,6 +20,12 @@ dependencies = [
     "google-genai>=0.3",
     "python-jose[cryptography]>=3.3",
     "passlib[bcrypt]>=1.7",
+    # passlib 1.7.4 (its last release, unmaintained since 2020) probes
+    # bcrypt.__about__.__version__ to detect the backend version; bcrypt
+    # 4.1.0 removed that module entirely, which makes every hash_password/
+    # verify_password call raise AttributeError -> ValueError. Pin below
+    # that break until passlib cuts a release that supports modern bcrypt.
+    "bcrypt>=4.0.1,<4.1",
     "python-multipart>=0.0.9",
     "shapely>=2.0",
     "pyproj>=3.6",

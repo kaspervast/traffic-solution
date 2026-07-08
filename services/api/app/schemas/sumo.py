@@ -56,6 +56,24 @@ class SumoScenarioRequest(BaseModel):
     created_by: str | None = None
 
 
+class ScenarioReviewUpdate(BaseModel):
+    """Body for PATCH /api/sumo/scenarios/{id} -- the human-in-the-loop gate
+    that moves a scenario from draft to approved/rejected (spec section B
+    rule 10). Nothing else in the app can set human_review_status."""
+
+    human_review_status: Literal["approved", "rejected"]
+    reviewed_by: str | None = None
+
+
+class ScenarioDraftRequest(BaseModel):
+    """Body for POST /api/sumo/scenarios/draft (spec section S, stage 1)."""
+
+    request_text: str
+    sumo_edge_id: str
+    network_id: str
+    aoi_id: str
+
+
 class SumoRunMetricsOut(BaseModel):
     total_departed: int | None = None
     total_arrived: int | None = None

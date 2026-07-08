@@ -44,3 +44,31 @@ class SumoServiceClient:
             r = await client.get(f"{self.base_url}/network/edges", params={"net_file": net_file})
             r.raise_for_status()
             return r.json()
+
+    async def build_scenario(
+        self,
+        name: str,
+        bbox: str,
+        duration_seconds: int = 3600,
+        demand_period: float = 3.0,
+        fringe_factor: float = 5.0,
+        seed: int = 42,
+        timeout_sec: float = 240.0,
+    ) -> dict[str, Any]:
+        """Calls the simulation service's /build-scenario (Overpass download
+        + netconvert + randomTrips). Overpass alone can take up to ~2 minutes
+        for a larger pilot area, so this uses a generous timeout by default."""
+        async with httpx.AsyncClient(timeout=timeout_sec) as client:
+            r = await client.post(
+                f"{self.base_url}/build-scenario",
+                json={
+                    "name": name,
+                    "bbox": bbox,
+                    "duration_seconds": duration_seconds,
+                    "demand_period": demand_period,
+                    "fringe_factor": fringe_factor,
+                    "seed": seed,
+                },
+            )
+            r.raise_for_status()
+            return r.json()

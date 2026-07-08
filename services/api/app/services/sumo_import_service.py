@@ -38,54 +38,69 @@ def load_sumolib():
     return sumolib
 
 
-def import_network_to_postgis(
+def _get_or_create_network(
     db: Session,
-    net_file: str,
+    network_name: str,
+    aoi_id: uuid.UUID | None,
+    bbox: tuple[float, float, float, float],
+    source: str,
+    osm_file: str | None,
+    sumo_version: str | None,
+    net_file: str | None,
+    metadata: dict[str, Any] | None,
+) -> tuple[SumoNetwork, bool]:
+    min_lon, min_lat, max_lon, max_lat = bbox
+    network = db.scalar(select(SumoNetwork).where(SumoNetwork.name == network_name))
+    if network is not None:
+        return network, False
+    network = SumoNetwork(
+        aoi_id=aoi_id,
+        name=network_name,
+        sumo_version=sumo_version,
+        source=source,
+        bbox_min_lat=min_lat,
+        bbox_min_lon=min_lon,
+        bbox_max_lat=max_lat,
+        bbox_max_lon=max_lon,
+        net_file_path=net_file,
+        osm_file_path=osm_file,
+        is_active=True,
+        metadata_json=metadata or {},
+    )
+    db.add(network)
+    db.commit()
+    db.refresh(network)
+    return network, True
+
+
+def import_edges_to_postgis(
+    db: Session,
+    edges: list[dict[str, Any]],
     network_name: str,
     aoi_id: uuid.UUID | None,
     bbox: tuple[float, float, float, float],
     source: str = "osm",
     osm_file: str | None = None,
+    net_file: str | None = None,
     sumo_version: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Creates (or reuses, matched by name) a `sumo_networks` row and
-    imports every non-internal edge in `net_file` as a `sumo_edges` row,
-    with shapes converted to WGS84 via the network's own projection
-    metadata (net.convertXY2LonLat) -- never a guessed projection, per spec
-    section G.
+    imports a list of PRE-EXTRACTED edge dicts as `sumo_edges` rows. Each
+    edge dict is the shape returned by the simulation service's
+    /build-scenario "edges" field (sumo_edge_id, from_node, to_node,
+    road_name, priority, num_lanes, speed_mps, length_m, lonlat_shape as
+    [[lon, lat], ...], raw).
 
-    `bbox` is (min_lon, min_lat, max_lon, max_lat).
-
-    Returns {"network_id": str, "created": bool, "edges_created": int,
-    "edges_skipped_no_shape": int}.
-    """
-    sumolib = load_sumolib()
-    net = sumolib.net.readNet(net_file, withInternal=False)
-
-    min_lon, min_lat, max_lon, max_lat = bbox
-
-    network = db.scalar(select(SumoNetwork).where(SumoNetwork.name == network_name))
-    created = False
-    if network is None:
-        network = SumoNetwork(
-            aoi_id=aoi_id,
-            name=network_name,
-            sumo_version=sumo_version,
-            source=source,
-            bbox_min_lat=min_lat,
-            bbox_min_lon=min_lon,
-            bbox_max_lat=max_lat,
-            bbox_max_lon=max_lon,
-            net_file_path=net_file,
-            osm_file_path=osm_file,
-            is_active=True,
-            metadata_json=metadata or {},
-        )
-        db.add(network)
-        db.commit()
-        db.refresh(network)
-        created = True
+    This is the path used by POST /api/sumo/networks/import-osm: the api
+    container has no SUMO/sumolib, so it cannot parse the .net.xml itself --
+    the SUMO-equipped simulation service extracts the edges (with WGS84
+    shapes recovered via the network's own projection metadata) and hands
+    them over already converted. `bbox` is (min_lon, min_lat, max_lon,
+    max_lat)."""
+    network, created = _get_or_create_network(
+        db, network_name, aoi_id, bbox, source, osm_file, sumo_version, net_file, metadata
+    )
 
     existing_edge_ids = set(
         db.scalars(select(SumoEdge.sumo_edge_id).where(SumoEdge.network_id == network.id))
@@ -93,32 +108,28 @@ def import_network_to_postgis(
 
     edges_created = 0
     edges_skipped_no_shape = 0
-    for edge in net.getEdges():
-        if edge.isSpecial():
+    for edge in edges:
+        edge_id = edge["sumo_edge_id"]
+        if edge_id in existing_edge_ids:
             continue
-        if edge.getID() in existing_edge_ids:
-            continue
-
-        shape_xy = edge.getShape()
-        if len(shape_xy) < 2:
+        shape = edge.get("lonlat_shape") or []
+        if len(shape) < 2:
             edges_skipped_no_shape += 1
             continue
-        shape_lonlat = [net.convertXY2LonLat(x, y) for x, y in shape_xy]
-        wkt = "LINESTRING(" + ", ".join(f"{lon} {lat}" for lon, lat in shape_lonlat) + ")"
-
+        wkt = "LINESTRING(" + ", ".join(f"{lon} {lat}" for lon, lat in shape) + ")"
         db.add(
             SumoEdge(
                 network_id=network.id,
-                sumo_edge_id=edge.getID(),
-                from_node=edge.getFromNode().getID() if edge.getFromNode() else None,
-                to_node=edge.getToNode().getID() if edge.getToNode() else None,
-                road_name=edge.getName() or None,
-                priority=edge.getPriority(),
-                num_lanes=len(edge.getLanes()),
-                speed_mps=edge.getSpeed(),
-                length_m=edge.getLength(),
+                sumo_edge_id=edge_id,
+                from_node=edge.get("from_node"),
+                to_node=edge.get("to_node"),
+                road_name=edge.get("road_name"),
+                priority=edge.get("priority"),
+                num_lanes=edge.get("num_lanes"),
+                speed_mps=edge.get("speed_mps"),
+                length_m=edge.get("length_m"),
                 geom=WKTElement(wkt, srid=4326),
-                raw={"function": edge.getFunction(), "type": edge.getType()},
+                raw=edge.get("raw") or {},
             )
         )
         edges_created += 1
@@ -133,3 +144,61 @@ def import_network_to_postgis(
         "edges_created": edges_created,
         "edges_skipped_no_shape": edges_skipped_no_shape,
     }
+
+
+def import_network_to_postgis(
+    db: Session,
+    net_file: str,
+    network_name: str,
+    aoi_id: uuid.UUID | None,
+    bbox: tuple[float, float, float, float],
+    source: str = "osm",
+    osm_file: str | None = None,
+    sumo_version: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """sumolib-backed variant: parses `net_file` directly and imports its
+    edges. Requires sumolib on the path (SUMO_HOME/tools), so this only runs
+    where SUMO is installed -- i.e. the standalone scripts/import_sumo_edges.py
+    CLI run on the host, NOT inside the SUMO-less api container (that path
+    uses import_edges_to_postgis with edges the simulation service already
+    extracted). Shapes are converted to WGS84 via the network's own
+    projection metadata (net.convertXY2LonLat), per spec section G.
+
+    `bbox` is (min_lon, min_lat, max_lon, max_lat)."""
+    sumolib = load_sumolib()
+    net = sumolib.net.readNet(net_file, withInternal=False)
+
+    edges: list[dict[str, Any]] = []
+    for edge in net.getEdges():
+        if edge.isSpecial():
+            continue
+        shape_xy = edge.getShape()
+        shape_lonlat = [list(net.convertXY2LonLat(x, y)) for x, y in shape_xy]
+        edges.append(
+            {
+                "sumo_edge_id": edge.getID(),
+                "from_node": edge.getFromNode().getID() if edge.getFromNode() else None,
+                "to_node": edge.getToNode().getID() if edge.getToNode() else None,
+                "road_name": edge.getName() or None,
+                "priority": edge.getPriority(),
+                "num_lanes": len(edge.getLanes()),
+                "speed_mps": edge.getSpeed(),
+                "length_m": edge.getLength(),
+                "lonlat_shape": shape_lonlat,
+                "raw": {"function": edge.getFunction(), "type": edge.getType()},
+            }
+        )
+
+    return import_edges_to_postgis(
+        db=db,
+        edges=edges,
+        network_name=network_name,
+        aoi_id=aoi_id,
+        bbox=bbox,
+        source=source,
+        osm_file=osm_file,
+        net_file=net_file,
+        sumo_version=sumo_version,
+        metadata=metadata,
+    )

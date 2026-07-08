@@ -186,19 +186,39 @@ def build_scenario(req: BuildScenarioRequest):
         raise HTTPException(status_code=500, detail=f"build-scenario pipeline failed: {exc}")
 
     try:
-        edge_count = len(extract_edges(str(net_file)))
+        edge_records = extract_edges(str(net_file))
         junction_count = count_junctions(str(net_file))
         vehicle_count = count_vehicles(str(route_file))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"build-scenario succeeded but post-build inspection failed: {exc}")
 
+    # Return the fully-extracted edges (with WGS84 shapes) so the API
+    # service can import them into PostGIS directly. sumolib -- which is
+    # required to parse the .net.xml and recover real-world coordinates --
+    # only exists in THIS (SUMO-equipped) container, not the api container,
+    # so the api service cannot re-parse the net file itself.
     return {
         "name": slug,
         "net_file": str(net_file),
         "osm_file": str(osm_file),
         "route_file": str(route_file),
-        "edge_count": edge_count,
+        "edge_count": len(edge_records),
         "junction_count": junction_count,
         "vehicle_count": vehicle_count,
         "validated": validated,
+        "edges": [
+            {
+                "sumo_edge_id": r.sumo_edge_id,
+                "from_node": r.from_node,
+                "to_node": r.to_node,
+                "road_name": r.road_name,
+                "priority": r.priority,
+                "num_lanes": r.num_lanes,
+                "speed_mps": r.speed_mps,
+                "length_m": r.length_m,
+                "lonlat_shape": r.lonlat_shape,
+                "raw": r.raw,
+            }
+            for r in edge_records
+        ],
     }

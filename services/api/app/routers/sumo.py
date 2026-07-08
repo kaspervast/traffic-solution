@@ -27,7 +27,7 @@ from app.services.comparison_service import build_comparison
 from app.services.gemini_service import GeminiUnavailableError, draft_scenario_request, summarize_scenario_result
 from app.services.scenario_context_service import build_scenario_context
 from app.services.sumo_client import SumoServiceClient
-from app.services.sumo_import_service import import_network_to_postgis
+from app.services.sumo_import_service import import_edges_to_postgis
 
 router = APIRouter(prefix="/api/sumo", tags=["sumo"])
 
@@ -89,14 +89,18 @@ async def import_osm_network(
     except ValueError:
         raise HTTPException(status_code=400, detail="Invalid bbox format; expected 'minLon,minLat,maxLon,maxLat'")
 
-    import_result = import_network_to_postgis(
+    # The simulation service already extracted the edges (with WGS84 shapes)
+    # and returned them in build_result -- the api container has no sumolib
+    # to parse the .net.xml itself, so we import those pre-extracted edges.
+    import_result = import_edges_to_postgis(
         db=db,
-        net_file=build_result["net_file"],
+        edges=build_result.get("edges", []),
         network_name=build_result["name"],
         aoi_id=payload.aoi_id,
         bbox=(min_lon, min_lat, max_lon, max_lat),
         source="osm",
         osm_file=build_result.get("osm_file"),
+        net_file=build_result.get("net_file"),
         metadata={
             "generated_via": "network-builder/build-scenario",
             "route_file": build_result.get("route_file"),

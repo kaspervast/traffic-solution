@@ -16,7 +16,13 @@ WORKDIR /app
 
 RUN python3 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --upgrade pip && pip install fastapi uvicorn pydantic redis sqlalchemy "psycopg[binary]"
+
+# Install from pyproject.toml (single source of truth for deps) rather than
+# a hand-maintained pip list here, which had drifted and was missing
+# pydantic-settings/httpx/pyproj that app/config.py and network_builder.py
+# actually import.
+COPY pyproject.toml /app/pyproject.toml
+RUN pip install --upgrade pip && pip install -e .
 
 COPY app /app/app
 COPY scenarios /app/scenarios

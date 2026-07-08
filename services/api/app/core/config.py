@@ -8,10 +8,16 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Repo root .env (services/api/app/core/config.py -> up 4 levels), falling
-# back to a local .env if this package is relocated (e.g. inside a container
-# where the repo root .env is mounted/copied differently).
-_REPO_ROOT_ENV = Path(__file__).resolve().parents[4] / ".env"
-_ENV_FILE = str(_REPO_ROOT_ENV) if _REPO_ROOT_ENV.exists() else ".env"
+# back to a local .env if this package is relocated -- e.g. inside a
+# container, where only services/api gets copied to /app and there is no
+# 5-level-deep parent directory at all (parents[4] would raise IndexError
+# rather than just missing the file). In a container, docker-compose's
+# `env_file: .env` already injects everything into the process environment,
+# so pydantic-settings finds the values via os.environ regardless of
+# whether an on-disk .env file is found here.
+_PARENTS = Path(__file__).resolve().parents
+_REPO_ROOT_ENV = _PARENTS[4] / ".env" if len(_PARENTS) > 4 else None
+_ENV_FILE = str(_REPO_ROOT_ENV) if _REPO_ROOT_ENV and _REPO_ROOT_ENV.exists() else ".env"
 
 
 class Settings(BaseSettings):

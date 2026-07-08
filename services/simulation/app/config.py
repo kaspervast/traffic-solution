@@ -14,8 +14,16 @@ from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _THIS_FILE = Path(__file__).resolve()
-# services/simulation/app/config.py -> repo root is 3 parents up
-_REPO_ROOT = _THIS_FILE.parents[3]
+# services/simulation/app/config.py -> repo root is 3 parents up. Inside a
+# container only services/simulation gets copied to /app, so there is no
+# 3-levels-up parent at all (parents[3] would raise IndexError). Fall back
+# to /app itself in that case -- docker-compose's `env_file: .env` already
+# injects everything into the process environment, and
+# SUMO_SCENARIO_DIR/SUMO_RUNS_DIR are set explicitly via compose
+# `environment:` for the container case rather than relying on this
+# repo-relative default.
+_PARENTS = _THIS_FILE.parents
+_REPO_ROOT = _PARENTS[3] if len(_PARENTS) > 3 else _THIS_FILE.parent
 _REPO_ROOT_ENV = _REPO_ROOT / ".env"
 
 

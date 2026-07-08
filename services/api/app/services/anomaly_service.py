@@ -6,7 +6,7 @@ deterministic rules evaluated against normalized TomTom flow data.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Literal
 
 Severity = Literal["low", "medium", "high", "critical", "normal"]
@@ -111,7 +111,7 @@ def build_evidence(
     speed_ratio: float | None,
     delay_sec: int | None,
     confidence: float | None,
-    nearby_incidents: list[dict[str, Any]] = field(default_factory=list),
+    nearby_incidents: list[dict[str, Any]] | None = None,
     weather: dict[str, Any] | None = None,
     local_events: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:

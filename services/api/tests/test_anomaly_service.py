@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import json
+
 from app.services.anomaly_service import (
+    build_evidence,
     classify_severity,
     compute_delay_sec,
     compute_speed_ratio,
@@ -101,3 +104,27 @@ def test_rule_precedence_top_to_bottom():
     # thresholds except the plain speed_ratio<=0.75 "low" rule.
     result = classify_severity(road_closure=False, speed_ratio=0.20, delay_sec=50)
     assert result == "low"
+
+
+def test_build_evidence_default_nearby_incidents_is_json_serializable():
+    # Regression test: nearby_incidents used to default to
+    # dataclasses.field(default_factory=list), which is only meaningful
+    # inside a @dataclass body. As a plain function default it evaluated to
+    # a literal dataclasses.Field sentinel object -- truthy, so
+    # `nearby_incidents or []` kept the sentinel instead of substituting
+    # [] -- which then failed to JSON-serialize when the ingestion worker
+    # tried to store the evidence dict into a JSONB column (only surfaced
+    # once this actually ran against a live Postgres).
+    evidence = build_evidence(
+        probe_point_id="p1",
+        observed_at="2026-07-08T00:00:00Z",
+        current_speed_kmph=10.0,
+        free_flow_speed_kmph=40.0,
+        speed_ratio=0.25,
+        delay_sec=600,
+        confidence=0.9,
+    )
+    assert evidence["nearby_incidents"] == []
+    assert evidence["weather"] == {}
+    assert evidence["local_events"] == []
+    json.dumps(evidence)  # must not raise

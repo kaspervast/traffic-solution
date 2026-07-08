@@ -201,12 +201,21 @@ def download_osm_extract(bbox: str, dest_path: str, attempts: int = 3) -> None:
     a RuntimeError with the response status/body on failure; never silently
     swallows a failed download.
 
-    The public overpass-api.de instance is a shared, occasionally
-    overloaded community service and intermittently returns transient
-    errors (406/429/5xx) for a request that succeeds moments later with the
-    exact same headers -- confirmed live: an identical request failed with
-    406 then succeeded with 200 a few seconds after. Retries a couple of
-    times with a short backoff before giving up for real.
+    The public overpass-api.de instance is a shared community service with
+    its own abuse-mitigation: a burst of requests in a short window (e.g.
+    repeated manual testing, or several operators generating networks close
+    together) gets soft-blocked with 406 for a while even though the
+    request itself is well-formed -- confirmed live by reproducing it
+    directly: one request succeeded, then every subsequent request (same
+    client, same headers, host and container alike) got 406 for several
+    minutes after. This is a rate limit, not a per-request fluke, so the
+    backoff here is deliberately in the 10s-40s range rather than a quick
+    couple of seconds -- a fast retry would just re-trigger the same block.
+    If every attempt still fails, the caller needs to wait longer than this
+    function is willing to block a single HTTP request for and try again
+    later; this is an external dependency limitation, not a bug to route
+    around with cleverer request headers (verified: varying Accept-Encoding
+    and User-Agent made no difference).
     """
     url = f"https://overpass-api.de/api/map?bbox={bbox}"
     last_error: str | None = None
@@ -228,9 +237,12 @@ def download_osm_extract(bbox: str, dest_path: str, attempts: int = 3) -> None:
             )
 
         if attempt < attempts:
-            time.sleep(3 * attempt)  # 3s, 6s
+            time.sleep(10 * attempt)  # 10s, 20s
 
-    raise RuntimeError(f"{last_error} (failed after {attempts} attempts)")
+    raise RuntimeError(
+        f"{last_error} (failed after {attempts} attempts). This looks like Overpass API's "
+        "shared-instance rate limiting rather than a bug -- wait a few minutes and retry."
+    )
 
 
 def resolve_random_trips_script() -> tuple[str, str]:

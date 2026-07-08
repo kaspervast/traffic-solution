@@ -30,11 +30,16 @@ RECENT_INCIDENT_LIMIT = 20
 
 
 def _get_edge_mapping(db: Session, sumo_edge_db_id: uuid.UUID) -> TomTomSumoEdgeMapping | None:
-    """Prefers an approved mapping; falls back to any mapping (pending/
-    manual_override/rejected) if no approved one exists yet, so the context
-    can still say *something* concrete rather than nothing -- but the
-    context always records review_status so Gemini/the operator can judge
-    trust level, never silently upgrading a pending match to fact."""
+    """Prefers an approved mapping; falls back to a pending/manual_override
+    mapping (not yet reviewed either way) if no approved one exists yet, so
+    the context can still say *something* concrete rather than nothing --
+    but the context always records review_status so Gemini/the operator can
+    judge trust level, never silently upgrading a pending match to fact.
+
+    Explicitly excludes review_status="rejected": a human already looked at
+    that match and said it's wrong, so it must never be surfaced even with
+    a caution label -- that would read as "unreviewed" rather than
+    "known incorrect"."""
     approved = db.scalar(
         select(TomTomSumoEdgeMapping).where(
             TomTomSumoEdgeMapping.sumo_edge_db_id == sumo_edge_db_id,
@@ -45,7 +50,10 @@ def _get_edge_mapping(db: Session, sumo_edge_db_id: uuid.UUID) -> TomTomSumoEdge
         return approved
     return db.scalar(
         select(TomTomSumoEdgeMapping)
-        .where(TomTomSumoEdgeMapping.sumo_edge_db_id == sumo_edge_db_id)
+        .where(
+            TomTomSumoEdgeMapping.sumo_edge_db_id == sumo_edge_db_id,
+            TomTomSumoEdgeMapping.review_status != "rejected",
+        )
         .order_by(TomTomSumoEdgeMapping.updated_at.desc())
     )
 
